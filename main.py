@@ -3,7 +3,7 @@ import json
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTreeWidget, QTreeWidgetItem, QTextBrowser, 
-                             QLineEdit, QLabel, QSplitter, QPushButton, QTabWidget, QListWidget, QListWidgetItem, QAbstractItemView)
+                             QLineEdit, QLabel, QSplitter, QPushButton, QTabWidget, QListWidget, QListWidgetItem, QAbstractItemView, QMessageBox)
 from PyQt5.QtCore import Qt, QSettings
 from PyQt5.QtGui import QFont, QIcon, QCursor, QColor, QPalette
 
@@ -139,12 +139,31 @@ class EsbabApp(QMainWindow):
         sidebar_layout = QVBoxLayout(sidebar_widget)
         sidebar_layout.setContentsMargins(15, 15, 10, 15)
         
-        # Search Box
+        # Search Box and Ayah Jump
+        search_layout = QHBoxLayout()
+        search_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.search_box = QLineEdit()
-        self.search_box.setPlaceholderText("Ara...")
+        self.search_box.setPlaceholderText("Sure Ara...")
         self.search_box.textChanged.connect(self.filter_tree)
         self.search_box.setMinimumHeight(45)
-        sidebar_layout.addWidget(self.search_box)
+        search_layout.addWidget(self.search_box, 3) # Stretch factor 3
+        
+        self.ayah_input = QLineEdit()
+        self.ayah_input.setPlaceholderText("Ayet No")
+        self.ayah_input.setMinimumHeight(45)
+        self.ayah_input.returnPressed.connect(self.jump_to_ayah)
+        self.ayah_input.setFixedWidth(80)
+        search_layout.addWidget(self.ayah_input, 1) # Stretch factor 1
+        
+        self.btn_jump = QPushButton("Git")
+        self.btn_jump.setCursor(QCursor(Qt.PointingHandCursor))
+        self.btn_jump.setMinimumHeight(45)
+        self.btn_jump.setFixedWidth(50)
+        self.btn_jump.clicked.connect(self.jump_to_ayah)
+        search_layout.addWidget(self.btn_jump, 0)
+        
+        sidebar_layout.addLayout(search_layout)
         
         self.tabs = QTabWidget()
         
@@ -281,6 +300,49 @@ class EsbabApp(QMainWindow):
         self.current_html_content = html
         self.refresh_html_view()
 
+    def jump_to_ayah(self):
+        target_ayah_str = self.ayah_input.text().strip()
+        if not target_ayah_str:
+            return
+            
+        current_tree = self.tabs.currentWidget()
+        if current_tree != self.tree_surah:
+            self.tabs.setCurrentWidget(self.tree_surah)
+            
+        # Get selected surah
+        sel_items = self.tree_surah.selectedItems()
+        if not sel_items:
+            if self.tree_surah.topLevelItemCount() > 0:
+                item = self.tree_surah.topLevelItem(0)
+            else:
+                QMessageBox.information(self, "Bilgi", "Lütfen önce bir sure seçin.")
+                return
+        else:
+            item = sel_items[0]
+            
+        # if item is ayah, get parent
+        if item.data(0, Qt.UserRole).get("type") == "ayah":
+            item = item.parent()
+            
+        # Item is now the surah. Let's find child.
+        found = False
+        import re
+        for i in range(item.childCount()):
+            child = item.child(i)
+            ayah_data = child.data(0, Qt.UserRole).get("data", {})
+            ayah_num = str(ayah_data.get("ayah_number", ""))
+            
+            parts = re.findall(r'\d+', ayah_num)
+            
+            if target_ayah_str == ayah_num or target_ayah_str in parts:
+                self.tree_surah.setCurrentItem(child)
+                self.display_content(child, 0)
+                found = True
+                break
+                
+        if not found:
+            QMessageBox.warning(self, "Uyarı", f"Bu surede {target_ayah_str}. ayet bulunamadı.")
+
     def add_bookmark(self):
         if hasattr(self, 'current_item_data') and self.current_item_data:
             item = self.current_item_data
@@ -295,15 +357,19 @@ class EsbabApp(QMainWindow):
                 
             # Avoid duplicates
             for b in self.bookmarks:
-                if b.get("title") == title: return
+                if b.get("title") == title:
+                    QMessageBox.information(self, "Bilgi", "Bu yer imi zaten mevcut!")
+                    return
                 
             bm = {"title": title, "data": item}
             self.bookmarks.append(bm)
             self.populate_bookmarks()
+            QMessageBox.information(self, "Başarılı", "Yer imi eklendi!")
             
     def remove_bookmark(self):
         current_item = self.list_bookmarks.currentItem()
         if not current_item:
+            QMessageBox.warning(self, "Uyarı", "Lütfen silmek için önce bir yer imi seçin.")
             return
             
         title = current_item.text()
@@ -314,6 +380,7 @@ class EsbabApp(QMainWindow):
                 break
                 
         self.populate_bookmarks()
+        QMessageBox.information(self, "Başarılı", "Yer imi kaldırıldı!")
         
     def populate_bookmarks(self):
         self.list_bookmarks.clear()
@@ -410,9 +477,18 @@ class EsbabApp(QMainWindow):
             <div class='ayah-text'>{ayah_text}</div>
         """
         if reason:
+            # Wrap text nicely: Split by \n\n (paragraphs), replace \n inside with space, join by <br><br>
+            paragraphs = main_reason.split('\n\n')
+            cleaned_paragraphs = []
+            for p in paragraphs:
+                cleaned = p.replace('\n', ' ').strip()
+                if cleaned:
+                    cleaned_paragraphs.append(cleaned)
+                    
+            formatted_reason = '<br><br>'.join(cleaned_paragraphs)
             html += f"""
             <div class='reason-title'>Nüzul Sebebi:</div>
-            <div class='reason-text'>{main_reason.replace(chr(10), '<br>')}</div>
+            <div class='reason-text'>{formatted_reason}</div>
             {citation_html}
             """
         html += "</div>"
