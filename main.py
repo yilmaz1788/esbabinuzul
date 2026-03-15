@@ -277,6 +277,7 @@ class EsbabApp(QMainWindow):
         if not item_data:
             return
             
+        self.current_item_data = item_data
         html = ""
         
         if item_data["type"] == "surah":
