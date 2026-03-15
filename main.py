@@ -17,7 +17,13 @@ class EsbabApp(QMainWindow):
         self.settings = QSettings("EsbabNuzul", "App")
         self.is_dark_mode = self.settings.value("is_dark_mode", True, type=bool)
         self.base_font_size = self.settings.value("base_font_size", 16, type=int)
-        self.bookmarks = self.settings.value("bookmarks", [], type=list)
+        
+        # Load bookmarks securely via JSON to avoid type corruption
+        bookmarks_json = self.settings.value("bookmarks_json", "[]", type=str)
+        try:
+            self.bookmarks = json.loads(bookmarks_json)
+        except:
+            self.bookmarks = []
         
         self.raw_data = self.load_data()
         self.meta_data = self.load_meta()
@@ -32,7 +38,7 @@ class EsbabApp(QMainWindow):
         if hasattr(self, 'current_item_data') and self.current_item_data:
             self.settings.setValue("last_read", self.current_item_data)
         
-        self.settings.setValue("bookmarks", self.bookmarks)
+        self.settings.setValue("bookmarks_json", json.dumps(self.bookmarks, ensure_ascii=False))
         super().closeEvent(event)
         
     def load_data(self):
@@ -148,27 +154,10 @@ class EsbabApp(QMainWindow):
         self.tree_surah.itemClicked.connect(self.display_content)
         self.tabs.addTab(self.tree_surah, "Sureler")
         
-        # 2. Cüzler Tab
-        self.tree_juz = QTreeWidget()
-        self.tree_juz.setHeaderHidden(True)
-        self.tree_juz.itemClicked.connect(self.display_content)
-        self.tabs.addTab(self.tree_juz, "Cüzler")
-        
-        # 3. Sayfalar Tab
-        self.tree_page = QTreeWidget()
-        self.tree_page.setHeaderHidden(True)
-        self.tree_page.itemClicked.connect(self.display_content)
-        self.tabs.addTab(self.tree_page, "Sayfalar")
-        
-        # 4. Yer İmleri Tab
+        # 2. Yer İmleri Tab
         self.list_bookmarks = QListWidget()
         self.list_bookmarks.itemClicked.connect(self.load_bookmark)
         self.tabs.addTab(self.list_bookmarks, "Yer İmleri")
-        
-        # 5. Kaynakça Tab
-        self.list_bibliography = QListWidget()
-        self.list_bibliography.setWordWrap(True)
-        self.tabs.addTab(self.list_bibliography, "Kaynakça")
         
         sidebar_layout.addWidget(self.tabs)
         
@@ -200,9 +189,6 @@ class EsbabApp(QMainWindow):
             self.display_content(first_item, 0)
     def load_item_data(self, item_data):
         self.current_item_data = item_data
-        self.current_citations = []
-        if hasattr(self, 'list_bibliography'):
-            self.list_bibliography.clear()
         html = ""
         
         if item_data.get("type") == "surah":
@@ -221,24 +207,12 @@ class EsbabApp(QMainWindow):
             
             html += f"<div class='surah-title'>{surah_name}</div><hr>"
             html += self.build_ayah_html(ayah)
-        
-        elif item_data.get("type") == "juz" or item_data.get("type") == "page":
-            title = item_data.get("title", "")
-            html += f"<div class='surah-title'>{title}</div><hr>"
-            for ayah in item_data.get("ayahs", []):
-                # Optionally add surah name for context if we're mixing surahs
-                s_name = ayah.get("surah_name", "")
-                html += f"<div class='reason-title' style='color:#00BFA5; font-size:12px;'>{s_name}</div>"
-                html += self.build_ayah_html(ayah)
 
         self.current_html_content = html
-        self.populate_bibliography()
         self.refresh_html_view()
 
     def populate_trees(self):
         self.tree_surah.clear()
-        self.tree_juz.clear()
-        self.tree_page.clear()
         
         # 1. Populate Surahs
         for surah_idx, surah in enumerate(self.raw_data):
@@ -254,70 +228,6 @@ class EsbabApp(QMainWindow):
                 ayah_item = QTreeWidgetItem(surah_item)
                 ayah_item.setText(0, f"{ayah_num}. Ayet")
                 ayah_item.setData(0, Qt.UserRole, {"type": "ayah", "surah_name": surah_name, "data": ayah})
-                
-        # Gather all Ayahs flat to map them easily
-        all_ayahs_flat = []
-        for surah_idx, surah in enumerate(self.raw_data):
-            surah_name = surah.get("name", f"Sure {surah_idx+1}")
-            for ayah in surah.get("ayahs", []):
-                cloned_ayah = dict(ayah)
-                cloned_ayah["surah_name"] = surah_name
-                cloned_ayah["surah_number"] = surah_idx + 1 # 1-indexed
-                all_ayahs_flat.append(cloned_ayah)
-                
-        # 2. Populate Juzs if meta exists
-        if 'juzs' in self.meta_data and 'references' in self.meta_data['juzs']:
-            juz_refs = self.meta_data['juzs']['references']
-            
-            for juz_idx, ref in enumerate(juz_refs):
-                juz_num = juz_idx + 1
-                
-                # find start flat index
-                start_surah = ref['surah']
-                start_ayah = ref['ayah']
-                
-                # Calculate end: it's the start of the next Juz minus 1, or end of quran
-                end_surah = 114
-                end_ayah = 9999
-                if juz_idx + 1 < len(juz_refs):
-                    end_surah = juz_refs[juz_idx+1]['surah']
-                    end_ayah = juz_refs[juz_idx+1]['ayah'] - 1
-                    
-                juz_ayahs = []
-                for a in all_ayahs_flat:
-                    # check if a is between start and end
-                    if (a["surah_number"] > start_surah or (a["surah_number"] == start_surah and int(a.get("ayah_number", 0)) >= start_ayah)) and \
-                       (a["surah_number"] < end_surah or (a["surah_number"] == end_surah and int(a.get("ayah_number", 0)) <= end_ayah)):
-                        juz_ayahs.append(a)
-                
-                juz_item = QTreeWidgetItem(self.tree_juz)
-                juz_item.setText(0, f"{juz_num}. Cüz")
-                juz_item.setData(0, Qt.UserRole, {"type": "juz", "title": f"{juz_num}. Cüz", "ayahs": juz_ayahs})
-                
-        # 3. Populate Pages if meta exists
-        if 'pages' in self.meta_data and 'references' in self.meta_data['pages']:
-            page_refs = self.meta_data['pages']['references']
-            
-            for page_idx, ref in enumerate(page_refs):
-                page_num = page_idx + 1
-                start_surah = ref['surah']
-                start_ayah = ref['ayah']
-                
-                end_surah = 114
-                end_ayah = 9999
-                if page_idx + 1 < len(page_refs):
-                    end_surah = page_refs[page_idx+1]['surah']
-                    end_ayah = page_refs[page_idx+1]['ayah'] - 1
-                    
-                page_ayahs = []
-                for a in all_ayahs_flat:
-                    if (a["surah_number"] > start_surah or (a["surah_number"] == start_surah and int(a.get("ayah_number", 0)) >= start_ayah)) and \
-                       (a["surah_number"] < end_surah or (a["surah_number"] == end_surah and int(a.get("ayah_number", 0)) <= end_ayah)):
-                        page_ayahs.append(a)
-                
-                page_item = QTreeWidgetItem(self.tree_page)
-                page_item.setText(0, f"Sayfa {page_num}")
-                page_item.setData(0, Qt.UserRole, {"type": "page", "title": f"Sayfa {page_num}", "ayahs": page_ayahs})
 
     def filter_tree(self, text):
         query = text.lower()
@@ -342,17 +252,12 @@ class EsbabApp(QMainWindow):
                     item.setExpanded(False)
 
         filter_items(self.tree_surah)
-        filter_items(self.tree_juz)
-        filter_items(self.tree_page)
 
     def display_content(self, item, column):
         item_data = item.data(0, Qt.UserRole)
         if not item_data:
             return
             
-        self.current_citations = []
-        if hasattr(self, 'list_bibliography'):
-            self.list_bibliography.clear()
         html = ""
         
         if item_data["type"] == "surah":
@@ -374,7 +279,6 @@ class EsbabApp(QMainWindow):
 
         # Store last rendered html block for copy functionality & refresh
         self.current_html_content = html
-        self.populate_bibliography()
         self.refresh_html_view()
 
     def add_bookmark(self):
@@ -388,8 +292,6 @@ class EsbabApp(QMainWindow):
                 sn = item.get("surah_name", "")
                 an = item.get("data", {}).get("ayah_number", "")
                 title = f"{sn} - {an}. Ayet"
-            elif item.get("type") in ["juz", "page"]:
-                title = item.get("title", "Bölüm")
                 
             # Avoid duplicates
             for b in self.bookmarks:
@@ -454,11 +356,11 @@ class EsbabApp(QMainWindow):
             .ayah-block {{ background-color: {block_bg}; padding: 25px; border-radius: 12px; margin-bottom: 25px; border-left: 5px solid #00BFA5; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
             .ayah-header {{ font-size: {self.base_font_size + 4}px; font-weight: bold; color: {ayah_header}; margin-bottom: 12px; letter-spacing: 0.5px; }}
             .ayah-text {{ font-size: {self.base_font_size + 2}px; margin-bottom: 20px; line-height: 1.7; color: {text_color}; }}
-            .reason-title {{ font-size: {self.base_font_size + 1}px; font-weight: bold; color: {reason_title}; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 1px; }}
-            .reason-text {{ font-size: {self.base_font_size}px; color: {text_color}; line-height: 1.8; }}
-            .citation-block {{ margin-top: 15px; padding: 15px; background-color: {citation_bg}; border-radius: 8px; border-left: 3px solid #757575; }}
-            .citation-title {{ font-size: {self.base_font_size - 1}px; font-weight: bold; color: {citation_text}; margin-bottom: 5px; }}
-            .citation-text {{ font-size: {self.base_font_size - 2}px; color: {citation_text}; line-height: 1.5; }}
+            .reason-title {{ font-size: {self.base_font_size + 4}px; font-weight: bold; color: {reason_title}; margin-bottom: 12px; margin-top: 20px; text-transform: uppercase; letter-spacing: 1px; }}
+            .reason-text {{ font-size: {self.base_font_size + 2}px; color: {text_color}; line-height: 1.8; margin-bottom: 15px; }}
+            .citation-block {{ margin-top: 20px; padding: 18px; background-color: {citation_bg}; border-radius: 10px; border-left: 5px solid #757575; }}
+            .citation-title {{ font-size: {self.base_font_size + 1}px; font-weight: bold; color: {citation_text}; margin-bottom: 8px; }}
+            .citation-text {{ font-size: {self.base_font_size}px; color: {citation_text}; line-height: 1.6; margin-bottom: 6px; }}
         </style>
         """
         self.content_browser.setHtml(doc_style + self.current_html_content)
@@ -487,19 +389,20 @@ class EsbabApp(QMainWindow):
         # A citation block usually starts with [1] on a new line. We can split using regex matching `\n[1] ` or similar.
         main_reason = reason
         citations = ""
+        citation_html = ""
         citation_match = re.search(r'(?:\n|^)(\[\d+\])\s', reason)
         if citation_match:
             split_index = citation_match.start()
             main_reason = reason[:split_index].strip()
             citations = reason[split_index:].strip()
             
-            if hasattr(self, 'current_citations') and citations:
+            if citations:
+                citation_html = "<div class='citation-block'><div class='citation-title'>Kaynakça:</div>"
                 for line in citations.split('\n'):
                     line = line.strip()
                     if line:
-                        s_name = ayah.get("surah_name", "")
-                        title = f"{s_name} {ayah_num}. Ayet" if s_name else f"{ayah_num}. Ayet"
-                        self.current_citations.append({"title": title, "text": line})
+                        citation_html += f"<div class='citation-text'>{line}</div>"
+                citation_html += "</div>"
         
         html = f"""
         <div class='ayah-block'>
@@ -510,20 +413,10 @@ class EsbabApp(QMainWindow):
             html += f"""
             <div class='reason-title'>Nüzul Sebebi:</div>
             <div class='reason-text'>{main_reason.replace(chr(10), '<br>')}</div>
+            {citation_html}
             """
         html += "</div>"
         return html
-
-    def populate_bibliography(self):
-        if hasattr(self, 'list_bibliography'):
-            self.list_bibliography.clear()
-        if not hasattr(self, 'current_citations'):
-            return
-        for cit in self.current_citations:
-            item = QListWidgetItem(f"{cit['title']}: {cit['text']}")
-            item.setToolTip(cit['text'])
-            if hasattr(self, 'list_bibliography'):
-                self.list_bibliography.addItem(item)
 
     def apply_styles(self):
         if self.is_dark_mode:
